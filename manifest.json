@@ -1,20 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "API Request Recorder",
+  "name": "API Recorder DevTools",
   "version": "1.0",
-  "description": "Record API requests in curl format for CI/CD test generation.",
-  "permissions": [
-    "webRequest",
-    "webRequestBlocking",
-    "scripting",
-    "storage",
-    "activeTab"
-  ],
+  "description": "Record API requests with headers and body via DevTools.",
+  "permissions": ["scripting", "tabs", "storage"],
   "host_permissions": ["<all_urls>"],
-  "background": {
-    "service_worker": "background.js"
+  "devtools_page": "devtools.html",
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
   },
   "action": {
-    "default_popup": "popup.html"
+    "default_title": "API Recorder"
   }
 }

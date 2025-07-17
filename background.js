@@ -1,68 +1,79 @@
 let isRecording = false;
 let domainFilter = "";
 let capturedRequests = [];
-let popupPort = null;
-const requestHeadersMap = new Map();
+const capturedRequestsMap = new Map();
 
-chrome.runtime.onConnect.addListener((port) => {
-  popupPort = port;
+// Load persisted state
+chrome.runtime.onStartup.addListener(loadState);
+chrome.runtime.onInstalled.addListener(loadState);
 
-  port.onMessage.addListener((msg) => {
-    if (msg.action === "start") {
-      isRecording = true;
-      domainFilter = msg.domain;
-      capturedRequests = [];
-      chrome.storage.local.set({ isRecording, domainFilter, capturedRequests });
-    }
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === "start") {
+    isRecording = true;
+    domainFilter = msg.domain;
+    capturedRequests = [];
+    chrome.storage.local.set({ isRecording, domainFilter, capturedRequests });
+    sendResponse({ status: "recording started" });
+  }
 
-    if (msg.action === "stop") {
-      isRecording = false;
-      chrome.storage.local.set({ isRecording });
+  if (msg.action === "stop") {
+    isRecording = false;
+    chrome.storage.local.set({ isRecording });
 
-      const curlList = capturedRequests.map(convertToCurl);
-      port.postMessage({ action: "export", data: curlList });
+    const curlList = capturedRequests.map(convertToCurl);
+    sendResponse({ action: "export", data: curlList });
 
-      chrome.storage.local.remove(["capturedRequests"]);
-    }
-  });
+    chrome.storage.local.remove(["capturedRequests"]);
+  }
 });
 
-// Listen for messages from content scripts
+// Capture request headers
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
     if (!isRecording) return;
-    requestHeadersMap.set(details.requestId, details.requestHeaders);
+    const req = capturedRequestsMap.get(details.requestId) || {};
+    req.headers = details.requestHeaders;
+    capturedRequestsMap.set(details.requestId, req);
   },
   { urls: ["<all_urls>"] },
-  ["requestHeaders"]
+  ["requestHeaders", "extraHeaders"]
 );
 
+// Capture request details
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    if (!isRecording || details.type !== "xmlhttprequest") return;
+    if (
+      !isRecording ||
+      (details.type !== "xmlhttprequest" && details.type !== "fetch")
+    )
+      return;
 
     const hostname = new URL(details.url).hostname;
     if (!hostname.endsWith(domainFilter)) return;
 
-    const headers = requestHeadersMap.get(details.requestId) || [];
+    const existing = capturedRequestsMap.get(details.requestId) || {};
 
     const req = {
       requestId: details.requestId,
       method: details.method,
       url: details.url,
-      headers,
-      requestBody: extractBody(details), // helper below
+      headers: existing.headers || [],
+      requestBody: extractBody(details),
     };
 
-    capturedRequests.push(req);
-    chrome.storage.local.set({ capturedRequests });
-    popupPort?.postMessage({ action: "update", data: req });
+    if (req.headers.length > 0) {
+      capturedRequests.push(req);
+      capturedRequestsMap.delete(details.requestId);
+      chrome.storage.local.set({ capturedRequests });
+    } else {
+      capturedRequestsMap.set(details.requestId, req);
+    }
   },
   { urls: ["<all_urls>"] },
   ["requestBody"]
 );
 
-// Helper to safely decode request body
+// Decode request body
 function extractBody(details) {
   try {
     if (details.requestBody?.raw?.[0]?.bytes) {
@@ -72,10 +83,9 @@ function extractBody(details) {
   return null;
 }
 
+// Convert to curl command
 function convertToCurl({ method, url, headers, requestBody }) {
   let curl = `curl -X ${method} "${url}"`;
-
-  // Add headers
   if (headers && headers.length > 0) {
     headers.forEach((h) => {
       if (h.name.toLowerCase() !== "content-length") {
@@ -83,18 +93,11 @@ function convertToCurl({ method, url, headers, requestBody }) {
       }
     });
   }
-
-  // Add body
   if (requestBody) {
     curl += ` \\\n  -d '${requestBody}'`;
   }
-
   return curl;
 }
-
-// Persist state when popup closes
-chrome.runtime.onStartup.addListener(loadState);
-chrome.runtime.onInstalled.addListener(loadState);
 
 function loadState() {
   chrome.storage.local.get(
